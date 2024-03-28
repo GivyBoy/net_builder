@@ -5,7 +5,6 @@ The idea is to simplify the process of creating the `conv blocks` for a network.
 It currently works like this:
 
 ```{python}
-
 class LeNet(nn.Module):
     # let's see if we can create LeNet5 - http://vision.stanford.edu/cs598_spring07/papers/Lecun98.pdf
     def __init__(self, in_channels: int, out_channels: int) -> None:
