@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from funcs import FUNCS
 from attn_blocks import CBAM
 
 from dataclasses import dataclass, field
@@ -25,16 +26,6 @@ block_config = ConvBlockConfig(in_channels=3, out_channels=32, structure="conv-b
 block = GenerateBlock(block_config)
 ```
 """
-
-FUNCS = {
-    "conv": nn.Conv2d,
-    "bn": nn.BatchNorm2d,
-    "relu": nn.ReLU,
-    "cbam": CBAM,
-    "max_pool": nn.MaxPool2d,
-    "avg_pool": nn.AvgPool2d,
-    "dropout": nn.Dropout2d,
-}
 
 
 def default_field(obj):
@@ -74,6 +65,28 @@ class ConvBlockConfigV2:
     depth = depth if depth <= len(structure.default_factory()["conv"]) else len(structure.default_factory()["conv"])
 
 
+@dataclass
+class ConvNetConfig:
+    sequence: str = "conv-cbam-relu-conv-cbam-relu-conv-cbam-relu-conv-cbam-relu-conv-cbam-relu-conv-cbam-relu-fc-fc"
+    structure: dict[str:list] = default_field(
+        {
+            "conv": [
+                (3, 32, 3, 1, 1),
+                (32, 64, 3, 1, 1),
+                (64, 128, 3, 1, 1),
+                (128, 256, 3, 1, 1),
+                (256, 512, 3, 1, 1),
+                (512, 512, 3, 1, 1),
+            ],  # (in_channels, out_channels, kernel_size, stride, padding)
+            "cbam": [(32, 16), (64, 16), (128, 16), (256, 16), (512, 16), (512, 16)],  # (in_channels, reduction_scalar)
+            "relu": [],
+            "fc": [(524_288, 1024), (1024, 3)],
+        }
+    )
+
+    structure_depth: dict[str:int] = default_field({key: len(val) for key, val in structure.default_factory().items()})
+
+
 """
 Potential Update to make it even more modular:
     i) define a sequence variable that tells the class how the model should be built. keep the `structure` variable as a placeholder
@@ -86,7 +99,7 @@ Potential Update to make it even more modular:
 class GenerateConvBlockV1(nn.Module):
 
     def __init__(self, config: ConvBlockConfigV1) -> None:
-        super(GenerateConvBlockV1, self).__init__()
+        super().__init__()
         self.config = config
 
         if isinstance(self.config.structure, str):
@@ -166,6 +179,42 @@ class GenerateConvBlockV2(nn.Module):
                 else:
                     raise ValueError(f"function {val} not recognized")
         return nn.Sequential(*func_list)
+
+
+class GenerateConvNet(nn.Module):
+    def __init__(self, config: ConvNetConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        if isinstance(self.config.structure, dict):
+            self.structure = self.config.structure
+            self.structure_depth = self.config.structure_depth
+            self.sequence = self.config.sequence.split("-")
+        else:
+            raise ValueError(f"structure must be a dict, got {type(self.config.structure)} instead")
+
+        self.conv_block, self.fc_layer = self._get_sequence()
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        return self.fc_layer(self.conv_block(x).flatten())
+
+    def _get_sequence(self) -> nn.Sequential:
+        func_list = []
+        fc_layer = []
+        for val in self.sequence:
+            if val in FUNCS:
+                func_val = self.structure[val][0] if len(self.structure[val]) > 0 else None
+                if func_val:
+                    self.structure[val].pop(0)
+                    if val == "fc":
+                        fc_layer.append(FUNCS[val](*func_val))
+                    else:
+                        func_list.append(FUNCS[val](*func_val))
+                else:
+                    func_list.append(FUNCS[val]())
+            else:
+                raise ValueError(f"function {val} not recognized")
+        return nn.Sequential(*func_list), nn.Sequential(*fc_layer)
 
 
 class ConvBlock(nn.Module):
@@ -311,6 +360,19 @@ if __name__ == "__main__":
     print(y_3.shape)
 
     mnist = torch.randn(1, 1, 32, 32)
-    le_net = LeNet(in_channels=1, out_channels=10)
-    le_net_out = le_net(mnist)
-    print(le_net_out.shape)
+    lenet = LeNet(in_channels=1, out_channels=10)
+    lenet_out = lenet(mnist)
+    print(lenet_out.shape)
+
+    lenet_config = ConvNetConfig(
+        sequence="conv-relu-avg_pool-conv-relu-avg_pool-conv-relu-fc-fc",
+        structure={
+            "conv": [(1, 6, 5, 1, 0), (6, 16, 5, 1, 0), (16, 120, 5, 1, 0)],
+            "relu": [],
+            "avg_pool": [(2, 2), (2, 2)],
+            "fc": [(120, 84), (84, 10)],
+        },
+    )
+    lenet_block = GenerateConvNet(lenet_config)
+    lenet_block_out = lenet_block(mnist)
+    print(lenet_block_out.shape)
